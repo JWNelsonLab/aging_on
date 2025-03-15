@@ -82,55 +82,66 @@ getOption("future.globals.maxSize") #59055800320
 
 # Load Object
 ```{r, echo=TRUE, error=FALSE, fig.align= 'center', message=FALSE, warning=FALSE}
-seu.obj<-readRDS(here("3-ON_Combined_Integration", "Intermediate_Objects", "3_ON_Combined_integrated_36dims_UMAP_renamed.rds")) #Change to be your object
+seu.obj<-readRDS(here("datasets", "3-Oligolineage_final.rds")) #Change to be your object
+
+SO <- seu.obj
+
+rm(seu.obj)
+
+head(SO@meta.data)
 ```
 
-# Psuedobulk Object
-## Group the cells and aggregate
-Group by the cell just by sample_ID, not taking into account the independent clusters (we will use cluster information later and repeat this code).
 
 ```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
-pbo <- AggregateExpression(seu.obj, 
-                           group.by = c("sample_ID"), # CHANGE the column with both condition and sample ID
-                           assays = 'RNA', 
-                           slot = "counts",
-                           return.seurat = FALSE)
+
+DimPlot(SO)
+
+DimPlot(SO, group.by = "subclusters")
+
+Idents(SO) <- SO@meta.data$subclusters
+
+SO <- PrepSCTFindMarkers(SO)
+
+df <- FindMarkers(SO, ident.1 = "OPC", logfc.threshold = 0.25, in.pct = 0.1)
+
+VlnPlot(SO, "Pdgfra")
+
+FeaturePlot(SO, "Pdgfra")
+
 
 ```
 
-## Extract the counts
-We will get a huge matrix with columns as the samples and rows as genes
+# Test Treatment DEGs
+
+Problem again
 
 ```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
-pbo <- pbo$RNA
-pbo[1:16, 1:16]
-colnames(pbo)[1:16]
+
+DimPlot(SO)
+
+df2 <- FindMarkers(SO, ident.1 = "normal", group.by = "myelination", subset.ident = "OPC")
+
+VlnPlot(SO, "", idents)
+
+
+markers <- FindMarkers(pbmc_small, ident.1 = "g1", group.by = 'groups', subset.ident = "2")
+
+
 ```
 
-## Add Metadata
-This allows you to add whichever components of metadata you'd like to include to graph you PCA data by and whichever components you want to design the DESeq object from. 
 ```{r}
-metadata <- seu.obj@meta.data %>%
-  as.data.frame() %>%
-  dplyr::select(sample_ID, replicate, age_group, genotype, day_nuclei_isolated) # CHANGE These correspond to the column names of the metadata you want to extract 
 
-dim(metadata)
-head(metadata)
+DefaultAssay(SO) <- "RNA"
 
-# Exclude duplicated rows 
-metadata <- metadata[!duplicated(metadata), ]
+SO <- JoinLayers(SO)
 
-dim(metadata)
-metadata
+SO <- SCTransform(SO, verbose = FALSE)
 
-# Rename rows to represent the sample IDs rather than the cell barcode IDs
-rownames(metadata) <- metadata$sample_ID
-head(metadata)
 
-# This enusres the columns match up between pbo and the metadata. -- can probably skip this if your samples don't start with a number.
-sample_names <- unique(seu.obj@meta.data$sample_ID) # CHANGE to be the column that you have for your samples
-sample_names
-colnames(pbo) <- sample_names
+
+
+SO[["SCT"]] <- NULL
+
 ```
 
 ## Make DESeq Dataset
