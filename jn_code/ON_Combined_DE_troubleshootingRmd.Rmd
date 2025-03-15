@@ -1,0 +1,361 @@
+---
+title: "ON Combined_psuedobulk anlysis "
+author: "Katie Emberley"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document: 
+    toc: yes
+    toc_depth: 3
+    toc_float: true
+    number_sections: yes
+    theme: bootstrap
+    df_print: paged
+    code_folding: hide
+    highlight: pygments
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Packages
+```{r load_new_packages, echo=T, error=FALSE, message=FALSE, warning=FALSE}
+if (!require("knitr")) {install.packages("knitr"); require("knitr")}
+if (!requireNamespace('BiocManager', quietly = TRUE)) {install.packages('BiocManager'); require("BiocManager")}
+if (!require("dplyr")) {install.packages("dplyr"); require("dplyr")}
+if (!require("stringr")) {install.packages("stringr"); require("stringr")}
+if (!require("Seurat")) {install.packages("Seurat"); require("Seurat")}
+if (!require("sctransform")) {install.packages("sctransform"); require("sctransform")}
+if (!require("glmGamPoi")) {BiocManager::install('glmGamPoi'); require("glmGamPoi")}
+if (!require("patchwork")) {install.packages("patchwork"); require("patchwork")}
+if (!require("ggplot2")) {install.packages("ggplot2"); require("ggplot2")}
+if (!require("EnhancedVolcano")) {BiocManager::install('EnhancedVolcano'); require("EnhancedVolcano")}
+if (!require("DESeq2")) {BiocManager::install('DESeq2'); require("DESeq2")}
+if (!require("tidyverse")) {install.packages("tidyverse"); require("tidyverse")}
+if (!require("RColorBrewer")) {install.packages("RColorBrewer"); require("RColorBrewer")}
+if (!require("car")) {install.packages("car"); require("car")}
+if (!require("openxlsx")) {install.packages("openxlsx"); require("openxlsx")}
+if (!require("readxl")) {install.packages("readxl"); require("readxl")}
+if (!require("ggrepel")) {install.packages("ggrepel"); require("ggrepel")}
+if (!require("gghighlight")) {install.packages("gghighlight"); require("gghighlight")}
+if (!require("ggpmisc")) {install.packages("ggpmisc"); require("ggpmisc")}
+if (!require("data.table")) {install.packages("data.table"); require("data.table")}
+if (!require("here")) {install.packages("here"); require("here")}
+if (!require("NatParksPalettes")) {install.packages("NatParksPalettes"); require("NatParksPalettes")}
+if (!require("svglite")) {install.packages("svglite"); require("svglite")}
+if (!require("ggvenn")) {install.packages("ggvenn"); require("ggvenn")}
+if (!require("kableExtra")) {install.packages("kableExtra"); require("kableExtra")} # for color brewer
+
+here()
+```
+
+```{r}
+set.seed(2469)
+```
+
+# Helpful Objects
+This section needs to be adjusted for each user. Either, have your own color scheme that matches your number of clusters, replicates, samples, age groups, and genotype groups -or- remove any specified color pallet in the graphing below. 
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=TRUE, fig.align = 'center'}
+# Color palette for PIPseq that coordinates with Yellowstone for clusters
+cluster_colors<- c("#0067A2", "#CC782B", "#5A8D66", "#509EA0", "#71A2B8", "#8A9BA9", "#B46DB3", "black")
+
+# Color palette for replicates -- adapted from the Torres colors
+replicate_colors <- c( "#7391BD" ,"#894846" ,"#E9988C" ,"#535260", "#B7A7A6" ,"#785838", "#C68D61" ,"#93995C")
+
+# Color pallete for "disordered" sample_ID (in order of lexicon, 1, 10-16, 2-9)
+sample_colors_d <- c("#C00000", "#FF8082", "#BFA85F", "#CCCA79", "#799E51", "#448A64", 
+  "#568BB1", "#775790", "#FF0000", "#FFC000", "#F5EF1E", "#92D050", 
+  "#00B050", "#0070C0", "#7030A0", "#D08B8C")
+
+# Group color pallet
+age_colors <- c("#BFA85F", "purple")
+
+# genotype color pallet
+genotype_colors <- c("orange", "blue")
+```
+
+# Increase Globals
+```{r}
+options(future.globals.maxSize = 74 * 1024^3) # 55 GB
+getOption("future.globals.maxSize") #59055800320
+```
+
+# Load Object
+```{r, echo=TRUE, error=FALSE, fig.align= 'center', message=FALSE, warning=FALSE}
+seu.obj<-readRDS(here("3-ON_Combined_Integration", "Intermediate_Objects", "3_ON_Combined_integrated_36dims_UMAP_renamed.rds")) #Change to be your object
+```
+
+# Psuedobulk Object
+## Group the cells and aggregate
+Group by the cell just by sample_ID, not taking into account the independent clusters (we will use cluster information later and repeat this code).
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+pbo <- AggregateExpression(seu.obj, 
+                           group.by = c("sample_ID"), # CHANGE the column with both condition and sample ID
+                           assays = 'RNA', 
+                           slot = "counts",
+                           return.seurat = FALSE)
+
+```
+
+## Extract the counts
+We will get a huge matrix with columns as the samples and rows as genes
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+pbo <- pbo$RNA
+pbo[1:16, 1:16]
+colnames(pbo)[1:16]
+```
+
+## Add Metadata
+This allows you to add whichever components of metadata you'd like to include to graph you PCA data by and whichever components you want to design the DESeq object from. 
+```{r}
+metadata <- seu.obj@meta.data %>%
+  as.data.frame() %>%
+  dplyr::select(sample_ID, replicate, age_group, genotype, day_nuclei_isolated) # CHANGE These correspond to the column names of the metadata you want to extract 
+
+dim(metadata)
+head(metadata)
+
+# Exclude duplicated rows 
+metadata <- metadata[!duplicated(metadata), ]
+
+dim(metadata)
+metadata
+
+# Rename rows to represent the sample IDs rather than the cell barcode IDs
+rownames(metadata) <- metadata$sample_ID
+head(metadata)
+
+# This enusres the columns match up between pbo and the metadata. -- can probably skip this if your samples don't start with a number.
+sample_names <- unique(seu.obj@meta.data$sample_ID) # CHANGE to be the column that you have for your samples
+sample_names
+colnames(pbo) <- sample_names
+```
+
+## Make DESeq Dataset
+When making the DESeq dataset, make sure the countData have the exact same column names in the exacts same order as the rows of metadata. You get to choose your `design` for what the model will base it's sample matrix on. Select one or more of your metadata columns. 
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = round(pbo), # Integers must be used for this matrix. 
+                              colData = metadata,
+                              design = ~ sample_ID) # CHANGE I am choosing to use sample ID rather than replicate here as we are trying to identify whether or not y20icKO batch differences will be an issue.
+```
+
+## Run PCA analyses
+```{r, out.width = "100%"}
+# Transform counts for data visualization
+rld <- rlog(dds, blind=TRUE)
+```
+
+### Plot PCA analyses
+Change this section to customize based on which metadata you would like plotted. Note, this section includes several customizations that are user specific based on metadata and color preferences. 
+```{r, out.width="100%"}
+
+sample_names <- unique(rld$sample_ID)
+
+# Plot PCA
+sample<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "sample_ID") + 
+  scale_color_manual(values = sample_colors_d)+ 
+  geom_text_repel(aes(label = sample_names))+
+  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
+  theme_minimal()
+
+replicate<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "replicate") + 
+  scale_color_manual(values = replicate_colors)+
+  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
+  theme_minimal()
+
+age<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "age_group") + 
+  scale_color_manual(values = age_colors)+
+  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
+  theme_minimal()
+
+
+genotype<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "genotype") + 
+  scale_color_manual(values = genotype_colors)+
+  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
+  theme_minimal()
+
+batch<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "day_nuclei_isolated") + 
+  scale_color_manual(values = c("pink", "darkgreen"))+
+  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
+  theme_minimal()
+
+
+plot(sample)
+plot(replicate)
+plot(age)
+plot(genotype)
+plot(batch)
+
+
+# Save the plots
+folder<-here("4-Analysis", "PCA")
+
+ggsave("PCA by Sample.svg", sample, path = folder)
+ggsave("PCA by Replicate.svg", replicate, path = folder)
+ggsave("PCA by Age.svg", age, path = folder)
+ggsave("PCA by Genotype.svg", genotype, path = folder)
+ggsave("PCA by Batch.svg", batch, path = folder)
+```
+
+# Run PCA on a per cluster basis
+# Psuedobulk Object
+## Group the cells and aggregate
+Group by the cell type and samples
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+pbo <- AggregateExpression(seu.obj, 
+                           group.by = c("fourth_label",     # CHANGE the column with the cell type information
+                                        "sample_ID"), # CHANGE the column with both condition and sample ID
+                           assays = 'RNA', 
+                           slot = "counts",
+                           return.seurat = FALSE)
+
+```
+
+## Extract the counts
+We will get a huge matrix with columns as the cell_samples and rows as genes
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+pbo <- pbo$RNA
+pbo[1:16, 1:16]
+colnames(pbo)[1:16]
+```
+
+### Data transformation
+- Transpose the columns and rows
+- Convert to data.frame
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+pbo.t <- t(pbo)
+pbo.t <- as.data.frame(pbo.t)
+```
+
+Check the structure of the data frame
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+pbo.t[1:10, 1:10]
+```
+
+Split the rows (cell_samples) to remove the sample ID and only keep cell type information in the data frame
+- Then we will get a vector containing the cell types, which will be used to split the data frame as a factor variable
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+
+# matching anything that's after the '_' and replace it with nothing (removing it)
+splitRows <- gsub('_.*', '', rownames(pbo.t)) 
+splitRows
+```
+
+Split data.frame using the splitRows vector
+- It will return a list with each element corresponding with a cell type 
+- Having data in such a list object makes it convenient to fetch matrices for any cell type in the data
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+pbo.split <- split.data.frame(pbo.t,
+                              f = factor(splitRows))
+```
+
+Check the matrix - using OPC as an example here
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+
+# rows as cell_sample ID and columns as genes
+pbo.split$"OPC"[1:6, 1:6] # CHANGE 
+
+```
+
+Fix colnames and transpose it back to columns as the cell_samples and rows as genes
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+
+# use 'lapply' to remove the cell type and only leave the sample ID, and also re-transpose the matrix 
+pbo.split.modified <- lapply(pbo.split, function(x){ 
+  rownames(x) <- gsub('.*_(.*)', '\\1', rownames(x)) # remove the cell type name from the row name
+  t(x)
+  
+})
+```
+
+Check if you have performed the changes
+
+```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+pbo.split.modified$"OPC"[1:6, 1:6] # CHANGE 
+pbo.split.modified$"Oligolineage"[1:6, 1:6] # CHANGE 
+```
+
+```{r, out.width = "100%"}
+# List of clusters
+clusters <- c("OPC", "Oligolineage", "Microglia", "Astrocyte", "Vascular")
+
+# Loop over each cluster
+for (cluster in clusters) {
+  
+  # Dynamically access the corresponding pbo.split.modified object (pbo.split.modified$<cluster>)
+  pbo <- pbo.split.modified[[cluster]]
+  
+  # Ensure the columns of pbo match the sample names from your metadata
+  sample_names <- unique(seu.obj@meta.data$sample_ID)
+  colnames(pbo) <- sample_names
+
+  # Create DESeq2 dataset
+  dds <- DESeqDataSetFromMatrix(countData = round(pbo), 
+                                colData = metadata,
+                                design = ~ sample_ID)  # Change design formula if needed
+  
+  # Run PCA (Rlog transformation)
+  rld <- rlog(dds, blind = TRUE)
+  
+  # Plot PCA by different metadata (you can customize the plots)
+  sample_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "sample_ID") + 
+    scale_color_manual(values = sample_colors_d) + 
+    geom_text_repel(aes(label = sample_names)) + 
+    theme_minimal() +
+    ggtitle(paste(cluster, "- sample_plot"))
+
+  replicate_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "replicate") + 
+    scale_color_manual(values = replicate_colors) + 
+    theme_minimal() +
+    ggtitle(paste(cluster, "- replicate_plot"))
+
+  age_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "age_group") + 
+    scale_color_manual(values = age_colors) + 
+    theme_minimal() +
+    ggtitle(paste(cluster, "- age_plot"))
+
+  genotype_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "genotype") + 
+    scale_color_manual(values = genotype_colors) + 
+    theme_minimal() +
+    ggtitle(paste(cluster, "- genotype_plot"))
+
+  batch_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "day_nuclei_isolated") + 
+    scale_color_manual(values = c("pink", "darkgreen")) + 
+    theme_minimal() +
+    ggtitle(paste(cluster, "- batch_plot"))
+
+  # Print each plot to the console
+  plot(sample_plot)
+  plot(replicate_plot)
+  plot(age_plot)
+  plot(genotype_plot)
+  plot(batch_plot)
+  
+  # Save the plots
+  folder <- here("4-Analysis", "PCA")
+  ggsave(paste0("PCA_", cluster, "_by_Sample.svg"), sample_plot, path = folder)
+  ggsave(paste0("PCA_", cluster, "_by_Replicate.svg"), replicate_plot, path = folder)
+  ggsave(paste0("PCA_", cluster, "_by_Age.svg"), age_plot, path = folder)
+  ggsave(paste0("PCA_", cluster, "_by_Genotype.svg"), genotype_plot, path = folder)
+  ggsave(paste0("PCA_", cluster, "_by_Batch.svg"), batch_plot, path = folder)
+
+  # Optionally, print the current cluster being processed
+  print(paste("Processing cluster:", cluster))
+}
+```
+
+# Session Info
+
+```{r sessioninfo, echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+sessionInfo()
+```
