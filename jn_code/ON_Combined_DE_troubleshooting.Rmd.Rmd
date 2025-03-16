@@ -1,6 +1,6 @@
 ---
-title: "ON Combined_psuedobulk anlysis "
-author: "Katie Emberley"
+title: "ON Combined DEG troubleshooting"
+author: "Jonathan Nelson"
 date: "`r format(Sys.time(), '%d %B %Y')`"
 output:
   html_document: 
@@ -81,6 +81,7 @@ getOption("future.globals.maxSize") #59055800320
 ```
 
 # Load Object
+
 ```{r, echo=TRUE, error=FALSE, fig.align= 'center', message=FALSE, warning=FALSE}
 seu.obj<-readRDS(here("datasets", "3-Oligolineage_final.rds")) #Change to be your object
 
@@ -89,8 +90,23 @@ SO <- seu.obj
 rm(seu.obj)
 
 head(SO@meta.data)
+
+SO
+
+DimPlot(SO)
+
+# Downsample because I'm on a computer with only 16GB of RAM (With Seurat v5)
+# This code downsamples to 1000 cells for every active identity category (which in this case is Sample ID)
+
+SO <- subset(SO, downsample = 1000)
+
+rm(SO2)
+
 ```
 
+# Testing Cluster DEGs
+
+This seems to work fine after PrepSCTFindMArkers()
 
 ```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
 
@@ -102,32 +118,44 @@ Idents(SO) <- SO@meta.data$subclusters
 
 SO <- PrepSCTFindMarkers(SO)
 
-df <- FindMarkers(SO, ident.1 = "OPC", logfc.threshold = 0.25, in.pct = 0.1)
+df <- FindMarkers(SO, ident.1 = "OPC", logfc.threshold = 0.25, min.pct = 0.1)
 
 VlnPlot(SO, "Pdgfra")
 
 FeaturePlot(SO, "Pdgfra")
 
+Idents(SO) <- SO@meta.data$subclusters
 
 ```
 
 # Test Treatment DEGs
 
-Problem again
+This doesn't work! Even though I know I just ran **PrepSCTFindMarkers()**
+
+Error in FindMarkers.SCTAssay(object = data.use, latent.vars = latent.vars,  : 
+  Object contains multiple models with unequal library sizes. Run `PrepSCTFindMarkers()` before running `FindMarkers()`.
 
 ```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
 
 DimPlot(SO)
 
-df2 <- FindMarkers(SO, ident.1 = "normal", group.by = "myelination", subset.ident = "OPC")
-
-VlnPlot(SO, "", idents)
-
-
-markers <- FindMarkers(pbmc_small, ident.1 = "g1", group.by = 'groups', subset.ident = "2")
-
+# df2 <- FindMarkers(SO, ident.1 = "normal", group.by = "myelination", subset.ident = "OPC", logfc.threshold = 0.25, min.pct = 0.1)
 
 ```
+
+# Solution
+
+I think this problem stems from multiple issues. Mostly from new Seurat behaviors in V5 vs. V4 that we're not used to yet.
+
+First, the **RNA assay layers** were never joined together, which I wonder if it messed up the initial SCT calculations. Regardless, there are multiple SCT assays in this object which I think is the heart of the problem. 
+
+So my workaround is to: <br>
+1) Set SO default assay to RNA and **join** all the layers <br>
+2) Delete all previous SCT assays <br> 
+3) Rerun SCT on the entire object <r>
+<br>
+
+I was worried that this would lose the UMAP embeddings, but it appears that those are still intact. 
 
 ```{r}
 
@@ -135,238 +163,37 @@ DefaultAssay(SO) <- "RNA"
 
 SO <- JoinLayers(SO)
 
-SO <- SCTransform(SO, verbose = FALSE)
-
-
-
-
 SO[["SCT"]] <- NULL
 
-```
+SO <- SCTransform(SO)
 
-## Make DESeq Dataset
-When making the DESeq dataset, make sure the countData have the exact same column names in the exacts same order as the rows of metadata. You get to choose your `design` for what the model will base it's sample matrix on. Select one or more of your metadata columns. 
-```{r}
-dds <- DESeqDataSetFromMatrix(countData = round(pbo), # Integers must be used for this matrix. 
-                              colData = metadata,
-                              design = ~ sample_ID) # CHANGE I am choosing to use sample ID rather than replicate here as we are trying to identify whether or not y20icKO batch differences will be an issue.
-```
-
-## Run PCA analyses
-```{r, out.width = "100%"}
-# Transform counts for data visualization
-rld <- rlog(dds, blind=TRUE)
-```
-
-### Plot PCA analyses
-Change this section to customize based on which metadata you would like plotted. Note, this section includes several customizations that are user specific based on metadata and color preferences. 
-```{r, out.width="100%"}
-
-sample_names <- unique(rld$sample_ID)
-
-# Plot PCA
-sample<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "sample_ID") + 
-  scale_color_manual(values = sample_colors_d)+ 
-  geom_text_repel(aes(label = sample_names))+
-  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
-  theme_minimal()
-
-replicate<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "replicate") + 
-  scale_color_manual(values = replicate_colors)+
-  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
-  theme_minimal()
-
-age<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "age_group") + 
-  scale_color_manual(values = age_colors)+
-  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
-  theme_minimal()
-
-
-genotype<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "genotype") + 
-  scale_color_manual(values = genotype_colors)+
-  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
-  theme_minimal()
-
-batch<-DESeq2::plotPCA(rld, ntop = 1000, intgroup = "day_nuclei_isolated") + 
-  scale_color_manual(values = c("pink", "darkgreen"))+
-  coord_fixed(ratio = 2.5) +  # Aspect ratio of 2 means the x-axis is twice as long as the y-axis
-  theme_minimal()
-
-
-plot(sample)
-plot(replicate)
-plot(age)
-plot(genotype)
-plot(batch)
-
-
-# Save the plots
-folder<-here("4-Analysis", "PCA")
-
-ggsave("PCA by Sample.svg", sample, path = folder)
-ggsave("PCA by Replicate.svg", replicate, path = folder)
-ggsave("PCA by Age.svg", age, path = folder)
-ggsave("PCA by Genotype.svg", genotype, path = folder)
-ggsave("PCA by Batch.svg", batch, path = folder)
-```
-
-# Run PCA on a per cluster basis
-# Psuedobulk Object
-## Group the cells and aggregate
-Group by the cell type and samples
-
-```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
-pbo <- AggregateExpression(seu.obj, 
-                           group.by = c("fourth_label",     # CHANGE the column with the cell type information
-                                        "sample_ID"), # CHANGE the column with both condition and sample ID
-                           assays = 'RNA', 
-                           slot = "counts",
-                           return.seurat = FALSE)
+DimPlot(SO)
 
 ```
 
-## Extract the counts
-We will get a huge matrix with columns as the cell_samples and rows as genes
 
-```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
-pbo <- pbo$RNA
-pbo[1:16, 1:16]
-colnames(pbo)[1:16]
-```
-
-### Data transformation
-- Transpose the columns and rows
-- Convert to data.frame
-
-```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
-pbo.t <- t(pbo)
-pbo.t <- as.data.frame(pbo.t)
-```
-
-Check the structure of the data frame
-
-```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
-pbo.t[1:10, 1:10]
-```
-
-Split the rows (cell_samples) to remove the sample ID and only keep cell type information in the data frame
-- Then we will get a vector containing the cell types, which will be used to split the data frame as a factor variable
+# Test Treatment DEGs
 
 ```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
 
-# matching anything that's after the '_' and replace it with nothing (removing it)
-splitRows <- gsub('_.*', '', rownames(pbo.t)) 
-splitRows
-```
+DimPlot(SO)
 
-Split data.frame using the splitRows vector
-- It will return a list with each element corresponding with a cell type 
-- Having data in such a list object makes it convenient to fetch matrices for any cell type in the data
+df2 <- FindMarkers(SO, ident.1 = "normal", group.by = "myelination", subset.ident = "OPC", logfc.threshold = 0.25, min.pct = 0.1)
 
-```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
-pbo.split <- split.data.frame(pbo.t,
-                              f = factor(splitRows))
-```
+VlnPlot(SO, "Srebf2", idents = "OPC", split.by = "myelination")
 
-Check the matrix - using OPC as an example here
+VlnPlot(SO, "Srebf2", idents = "OPC", split.by = "sample_ID", group.by = "myelination")
 
-```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+VlnPlot(SO, "Adamts9", idents = "OPC", split.by = "myelination")
 
-# rows as cell_sample ID and columns as genes
-pbo.split$"OPC"[1:6, 1:6] # CHANGE 
+VlnPlot(SO, "Adamts9", idents = "OPC", split.by = "sample_ID", group.by = "myelination")
 
-```
-
-Fix colnames and transpose it back to columns as the cell_samples and rows as genes
-
-```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
-
-# use 'lapply' to remove the cell type and only leave the sample ID, and also re-transpose the matrix 
-pbo.split.modified <- lapply(pbo.split, function(x){ 
-  rownames(x) <- gsub('.*_(.*)', '\\1', rownames(x)) # remove the cell type name from the row name
-  t(x)
-  
-})
-```
-
-Check if you have performed the changes
-
-```{r echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
-pbo.split.modified$"OPC"[1:6, 1:6] # CHANGE 
-pbo.split.modified$"Oligolineage"[1:6, 1:6] # CHANGE 
-```
-
-```{r, out.width = "100%"}
-# List of clusters
-clusters <- c("OPC", "Oligolineage", "Microglia", "Astrocyte", "Vascular")
-
-# Loop over each cluster
-for (cluster in clusters) {
-  
-  # Dynamically access the corresponding pbo.split.modified object (pbo.split.modified$<cluster>)
-  pbo <- pbo.split.modified[[cluster]]
-  
-  # Ensure the columns of pbo match the sample names from your metadata
-  sample_names <- unique(seu.obj@meta.data$sample_ID)
-  colnames(pbo) <- sample_names
-
-  # Create DESeq2 dataset
-  dds <- DESeqDataSetFromMatrix(countData = round(pbo), 
-                                colData = metadata,
-                                design = ~ sample_ID)  # Change design formula if needed
-  
-  # Run PCA (Rlog transformation)
-  rld <- rlog(dds, blind = TRUE)
-  
-  # Plot PCA by different metadata (you can customize the plots)
-  sample_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "sample_ID") + 
-    scale_color_manual(values = sample_colors_d) + 
-    geom_text_repel(aes(label = sample_names)) + 
-    theme_minimal() +
-    ggtitle(paste(cluster, "- sample_plot"))
-
-  replicate_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "replicate") + 
-    scale_color_manual(values = replicate_colors) + 
-    theme_minimal() +
-    ggtitle(paste(cluster, "- replicate_plot"))
-
-  age_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "age_group") + 
-    scale_color_manual(values = age_colors) + 
-    theme_minimal() +
-    ggtitle(paste(cluster, "- age_plot"))
-
-  genotype_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "genotype") + 
-    scale_color_manual(values = genotype_colors) + 
-    theme_minimal() +
-    ggtitle(paste(cluster, "- genotype_plot"))
-
-  batch_plot <- DESeq2::plotPCA(rld, ntop = 1000, intgroup = "day_nuclei_isolated") + 
-    scale_color_manual(values = c("pink", "darkgreen")) + 
-    theme_minimal() +
-    ggtitle(paste(cluster, "- batch_plot"))
-
-  # Print each plot to the console
-  plot(sample_plot)
-  plot(replicate_plot)
-  plot(age_plot)
-  plot(genotype_plot)
-  plot(batch_plot)
-  
-  # Save the plots
-  folder <- here("4-Analysis", "PCA")
-  ggsave(paste0("PCA_", cluster, "_by_Sample.svg"), sample_plot, path = folder)
-  ggsave(paste0("PCA_", cluster, "_by_Replicate.svg"), replicate_plot, path = folder)
-  ggsave(paste0("PCA_", cluster, "_by_Age.svg"), age_plot, path = folder)
-  ggsave(paste0("PCA_", cluster, "_by_Genotype.svg"), genotype_plot, path = folder)
-  ggsave(paste0("PCA_", cluster, "_by_Batch.svg"), batch_plot, path = folder)
-
-  # Optionally, print the current cluster being processed
-  print(paste("Processing cluster:", cluster))
-}
 ```
 
 # Session Info
 
 ```{r sessioninfo, echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, fig.align = 'center'}
+
 sessionInfo()
+
 ```
